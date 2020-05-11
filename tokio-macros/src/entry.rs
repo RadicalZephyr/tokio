@@ -1,4 +1,5 @@
 use proc_macro::TokenStream;
+use proc_macro2::Span;
 use quote::quote;
 use std::num::NonZeroUsize;
 
@@ -29,6 +30,7 @@ fn parse_knobs(
     let mut runtime = None;
     let mut core_threads = None;
     let mut max_threads = None;
+    let mut tokio_name = None;
 
     for arg in args {
         match arg {
@@ -96,8 +98,19 @@ fn parse_knobs(
                             ))
                         }
                     },
+                    "crate" => match &namevalue.lit {
+                        syn::Lit::Str(v) => {
+                            tokio_name = Some(v.value());
+                        }
+                        _ => {
+                            return Err(syn::Error::new_spanned(
+                                namevalue,
+                                "crate argument must be a string",
+                            ))
+                        }
+                    },
                     name => {
-                        let msg = format!("Unknown attribute pair {} is specified; expected one of: `core_threads`, `max_threads`", name);
+                        let msg = format!("Unknown attribute pair {} is specified; expected one of: `core_threads`, `max_threads` or `crate`", name);
                         return Err(syn::Error::new_spanned(namevalue, msg));
                     }
                 }
@@ -127,8 +140,11 @@ fn parse_knobs(
             }
         }
     }
-
-    let mut rt = quote! { tokio::runtime::Builder::new().basic_scheduler() };
+    let tokio_name = syn::Ident::new(
+        &tokio_name.unwrap_or_else(|| String::from("tokio")),
+        Span::call_site(),
+    );
+    let mut rt = quote! { #tokio_name::runtime::Builder::new().basic_scheduler() };
     if rt_threaded && (runtime == Some(Runtime::Threaded) || (runtime.is_none() && !is_test)) {
         rt = quote! { #rt.threaded_scheduler() };
     }
@@ -239,36 +255,77 @@ pub(crate) mod old {
         sig.asyncness = None;
 
         let mut runtime = Runtime::Auto;
+        let mut tokio_name = None;
 
         for arg in args {
-            if let syn::NestedMeta::Meta(syn::Meta::Path(path)) = arg {
-                let ident = path.get_ident();
-                if ident.is_none() {
-                    let msg = "Must have specified ident";
-                    return syn::Error::new_spanned(path, msg).to_compile_error().into();
-                }
-                match ident.unwrap().to_string().to_lowercase().as_str() {
-                    "threaded_scheduler" => runtime = Runtime::Threaded,
-                    "basic_scheduler" => runtime = Runtime::Basic,
-                    name => {
-                        let msg = format!("Unknown attribute {} is specified; expected `basic_scheduler` or `threaded_scheduler`", name);
+            match arg {
+                syn::NestedMeta::Meta(syn::Meta::Path(path)) => {
+                    let ident = path.get_ident();
+                    if ident.is_none() {
+                        let msg = "Must have specified ident";
                         return syn::Error::new_spanned(path, msg).to_compile_error().into();
                     }
+                    match ident.unwrap().to_string().to_lowercase().as_str() {
+                        "threaded_scheduler" => runtime = Runtime::Threaded,
+                        "basic_scheduler" => runtime = Runtime::Basic,
+                        name => {
+                            let msg = format!("Unknown attribute {} is specified; expected `basic_scheduler` or `threaded_scheduler`", name);
+                            return syn::Error::new_spanned(path, msg).to_compile_error().into();
+                        }
+                    }
                 }
+                syn::NestedMeta::Meta(syn::Meta::NameValue(namevalue)) => {
+                    let ident = namevalue.path.get_ident();
+                    if ident.is_none() {
+                        let msg = "Must have specified ident";
+                        return syn::Error::new_spanned(namevalue, msg)
+                            .to_compile_error()
+                            .into();
+                    }
+
+                    match ident.unwrap().to_string().to_lowercase().as_str() {
+                        "crate" => match &namevalue.lit {
+                            syn::Lit::Str(v) => {
+                                tokio_name = Some(v.value());
+                            }
+                            _ => {
+                                return syn::Error::new_spanned(
+                                    namevalue,
+                                    "crate argument must be a string",
+                                )
+                                .to_compile_error()
+                                .into()
+                            }
+                        },
+                        _ => {
+                            return syn::Error::new_spanned(
+                                namevalue,
+                                "core_threads argument must be an int",
+                            )
+                            .to_compile_error()
+                            .into()
+                        }
+                    }
+                }
+                _ => {}
             }
         }
 
+        let tokio_name = syn::Ident::new(
+            &tokio_name.unwrap_or_else(|| String::from("tokio")),
+            proc_macro2::Span::call_site(),
+        );
         let result = match runtime {
             Runtime::Threaded | Runtime::Auto => quote! {
                 #(#attrs)*
                 #vis #sig {
-                    tokio::runtime::Runtime::new().unwrap().block_on(async { #body })
+                    #tokio_name::runtime::Runtime::new().unwrap().block_on(async { #body })
                 }
             },
             Runtime::Basic => quote! {
                 #(#attrs)*
                 #vis #sig {
-                    tokio::runtime::Builder::new()
+                    #tokio_name::runtime::Builder::new()
                         .basic_scheduler()
                         .enable_all()
                         .build()
@@ -313,38 +370,84 @@ pub(crate) mod old {
         }
 
         let mut runtime = Runtime::Auto;
+        let mut tokio_name = None;
 
         for arg in args {
-            if let syn::NestedMeta::Meta(syn::Meta::Path(path)) = arg {
-                let ident = path.get_ident();
-                if ident.is_none() {
-                    let msg = "Must have specified ident";
-                    return syn::Error::new_spanned(path, msg).to_compile_error().into();
-                }
-                match ident.unwrap().to_string().to_lowercase().as_str() {
-                    "threaded_scheduler" => runtime = Runtime::Threaded,
-                    "basic_scheduler" => runtime = Runtime::Basic,
-                    name => {
-                        let msg = format!("Unknown attribute {} is specified; expected `basic_scheduler` or `threaded_scheduler`", name);
+            match arg {
+                syn::NestedMeta::Meta(syn::Meta::Path(path)) => {
+                    let ident = path.get_ident();
+                    if ident.is_none() {
+                        let msg = "Must have specified ident";
                         return syn::Error::new_spanned(path, msg).to_compile_error().into();
                     }
+                    match ident.unwrap().to_string().to_lowercase().as_str() {
+                        "threaded_scheduler" => runtime = Runtime::Threaded,
+                        "basic_scheduler" => runtime = Runtime::Basic,
+                        name => {
+                            let msg = format!("Unknown attribute {} is specified; expected `basic_scheduler` or `threaded_scheduler`", name);
+                            return syn::Error::new_spanned(path, msg).to_compile_error().into();
+                        }
+                    }
+                }
+                syn::NestedMeta::Meta(syn::Meta::NameValue(namevalue)) => {
+                    let ident = namevalue.path.get_ident();
+                    if ident.is_none() {
+                        let msg = "Must have specified ident";
+                        return syn::Error::new_spanned(namevalue, msg)
+                            .to_compile_error()
+                            .into();
+                    }
+
+                    match ident.unwrap().to_string().to_lowercase().as_str() {
+                        "crate" => match &namevalue.lit {
+                            syn::Lit::Str(v) => {
+                                tokio_name = Some(v.value());
+                            }
+                            _ => {
+                                return syn::Error::new_spanned(
+                                    namevalue,
+                                    "crate argument must be a string",
+                                )
+                                .to_compile_error()
+                                .into()
+                            }
+                        },
+                        name => {
+                            let msg = format!(
+                                "Unknown attribute pair {} is specified; expected one of: `crate`",
+                                name
+                            );
+                            return syn::Error::new_spanned(namevalue, msg)
+                                .to_compile_error()
+                                .into();
+                        }
+                    }
+                }
+                other => {
+                    return syn::Error::new_spanned(other, "Unknown attribute inside the macro")
+                        .to_compile_error()
+                        .into();
                 }
             }
         }
 
+        let tokio_name = syn::Ident::new(
+            &tokio_name.unwrap_or_else(|| String::from("tokio")),
+            proc_macro2::Span::call_site(),
+        );
         let result = match runtime {
             Runtime::Threaded => quote! {
                 #[test]
                 #(#attrs)*
                 #vis fn #name() #ret {
-                    tokio::runtime::Runtime::new().unwrap().block_on(async { #body })
+                    #tokio_name::runtime::Runtime::new().unwrap().block_on(async { #body })
                 }
             },
             Runtime::Basic | Runtime::Auto => quote! {
                 #[test]
                 #(#attrs)*
                 #vis fn #name() #ret {
-                    tokio::runtime::Builder::new()
+                    #tokio_name::runtime::Builder::new()
                         .basic_scheduler()
                         .enable_all()
                         .build()

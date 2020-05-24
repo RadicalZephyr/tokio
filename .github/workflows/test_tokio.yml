@@ -59,7 +59,7 @@ jobs:
 
     steps:
       - uses: actions/checkout@master
-      - run: "${{ github.workspace }}/ci/test-subcrates.sh ${{ matrix.crates }}"
+      - run: ci/test-subcrates.sh ${{ matrix.crates }}
         shell: bash
 
   test_integration:
